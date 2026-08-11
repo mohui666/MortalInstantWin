@@ -4,7 +4,7 @@
     <TargetFramework>net48</TargetFramework>
     <AssemblyName>MortalInstantWin</AssemblyName>
     <RootNamespace>MortalInstantWin</RootNamespace>
-    <Version>1.2.1</Version>
+    <Version>1.3.0</Version>
     <LangVersion>7.3</LangVersion>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <!-- 游戏安装目录，可用 -p:MortalPath=... 覆盖 -->
@@ -50,6 +50,10 @@
     </Reference>
     <Reference Include="UnityEngine.UI">
       <HintPath>$(MortalPath)\Mortal_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(MortalPath)\Mortal_Data\Managed\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Unity.InputSystem">

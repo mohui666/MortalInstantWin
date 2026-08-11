@@ -6,44 +6,59 @@ using UnityEngine.UI;
 namespace MortalInstantWin
 {
     /// <summary>
-    /// 游戏风格的可拖动结算面板：运行时从当前场景提取游戏 UI 的样式素材
-    /// （按钮底图 Sprite 来自场景中 Selectable 的 targetGraphic，字体/颜色来自
-    /// 场景中的按钮标签 Text），从零拼装出与游戏 UI 一致的面板，
-    /// 挂到新建的 Overlay Canvas 上，拖动面板背景移动。
+    /// 游戏风格的可拖动结算面板（静态实现，不持有常驻 MonoBehaviour，
+    /// 避免 BepInEx 环境下组件被销毁导致的假空引用；面板若被销毁会自动重建）。
+    ///
+    /// 外观按《活侠传》官方水墨 UI 风格手工设计：深色半透明底、细白边框、
+    /// 行书字体（字体取自场景中游戏自带文本，取不到则用系统默认字体），
+    /// 边框纹理由代码烘焙 9-slice 精灵，不依赖场景模板。
     /// </summary>
-    public class GameStylePanel : MonoBehaviour
+    public static class GameStylePanel
     {
-        private static readonly Vector2 PanelSize = new Vector2(240f, 172f);
+        private static readonly Vector2 PanelSize = new Vector2(240f, 176f);
         private static readonly Vector2 ButtonSize = new Vector2(200f, 56f);
+        private static readonly Color TextColor = new Color(0.95f, 0.94f, 0.90f);
 
-        private RectTransform _panel;
-        private Text _titleText;
-        private Text _winLabel;
-        private Text _loseLabel;
-        private bool _built;
-        private bool _failed;
-        private bool _visible = true;
-        private bool _isDuel = true;
+        private static RectTransform _panel;
+        private static Text _winLabel;
+        private static Text _loseLabel;
+        private static bool _built;
+        private static bool _failed;
+        private static bool _visible = true;
+        private static bool _isDuel = true;
 
-        public Action OnWin;
-        public Action OnLose;
-        public Action<Vector2> OnMoved;
+        public static Action OnWin;
+        public static Action OnLose;
+        public static Action<Vector2> OnMoved;
+        public static Action<string> Log;
 
-        public bool Ready
+        public static bool Ready
         {
-            get { return _built; }
+            get { return _built && _panel != null; }
         }
 
-        public bool Failed
+        public static bool Failed
         {
             get { return _failed; }
         }
 
+        private static void LogInfo(string message)
+        {
+            if (Log != null) Log(message);
+        }
+
         /// <summary>设置面板可见性与当前战斗类型（单挑/战役），并刷新按钮文字。</summary>
-        public void SetContext(bool visible, bool isDuel)
+        public static void SetContext(bool visible, bool isDuel)
         {
             _visible = visible;
             _isDuel = isDuel;
+            // 面板在运行中被销毁时，重置为未构建，等待下次 TryBuild 重建
+            if (_built && _panel == null)
+            {
+                LogInfo("检测到面板已被销毁，将尝试重建。");
+                _built = false;
+                return;
+            }
             if (!_built) return;
             if (_panel.gameObject.activeSelf != visible)
                 _panel.gameObject.SetActive(visible);
@@ -55,20 +70,19 @@ namespace MortalInstantWin
             }
         }
 
-        /// <summary>尝试构建面板；场景里暂时找不到游戏 UI 样式素材时返回 false，稍后重试。</summary>
-        public bool TryBuild(Vector2 anchoredPos)
+        /// <summary>尝试构建面板；失败仅记录日志并置 Failed，由调用方退回兜底界面。</summary>
+        public static bool TryBuild(Vector2 anchoredPos)
         {
+            if (_built && _panel == null) _built = false;
             if (_built) return true;
             if (_failed) return false;
             try
             {
-                var style = FindStyleSources();
-                if (style == null) return false;
-                Build(style, anchoredPos);
+                Build(anchoredPos);
             }
             catch (Exception e)
             {
-                Debug.LogError("[MortalInstantWin] 构建游戏风格面板失败: " + e);
+                LogInfo("构建游戏风格面板失败: " + e);
                 _failed = true;
                 return false;
             }
@@ -77,119 +91,104 @@ namespace MortalInstantWin
             return true;
         }
 
-        private class StyleSources
+        /// <summary>取游戏中显示过中文的动态字体（烘焙字体缺字会渲染空白，一律不用），取不到退回内置动态字体。</summary>
+        private static Font FindGameFont()
         {
-            public Sprite ButtonSprite;
-            public Image.Type ButtonSpriteType;
-            public Color ButtonColor;
-            public ColorBlock ButtonColors;
-            public Font Font;
-            public Color FontColor;
-            public int FontSize;
-        }
-
-        /// <summary>
-        /// 在场景中寻找游戏按钮的样式素材：
-        /// 底图取自带文本标签的 Selectable 的 targetGraphic（优先当前可见的），
-        /// 字体取自其标签 Text（或场景中任意 Text）。
-        /// </summary>
-        private static StyleSources FindStyleSources()
-        {
-            // 第一轮：在 Selectable（Button/Toggle 等游戏按钮）中评分取材，
-            // 底图 Sprite、文本标签、当前可见性加分
-            StyleSources style = null;
+            Text best = null;
             var bestScore = -1;
-            var selectables = FindObjectsOfType<Selectable>(true);
-            foreach (var s in selectables)
+            var candidates = new System.Text.StringBuilder();
+            var texts = UnityEngine.Object.FindObjectsOfType<Text>(true);
+            foreach (var t in texts)
             {
-                if (s == null) continue;
-                var image = s.targetGraphic as Image;
-                if (image == null) continue;
-                var label = s.GetComponentInChildren<Text>(true);
-                var score = (image.sprite != null ? 4 : 0) +
-                            (label != null ? 2 : 0) +
-                            (s.gameObject.activeInHierarchy ? 1 : 0);
+                if (t == null || t.font == null) continue;
+                var name = t.font.name;
+                if (candidates.Length < 240)
+                    candidates.Append(name).Append(t.font.dynamic ? "(动态) " : "(烘焙) ");
+                if (!t.font.dynamic) continue;                             // 烘焙字体可能缺字，禁用
+                if (name.Contains("Arial") || name.Contains("LegacyRuntime")) continue;
+                var score = 0;
+                if (ContainsCjk(t.text)) score += 4;                       // 显示中文 → 基本就是游戏字体
+                if (name.Contains("Xing") || name.Contains("Kai") ||
+                    name.Contains("Han") || name.Contains("Song") ||
+                    name.Contains("DF") || name.Contains("Noto")) score += 2; // 书法/宋体类字体名
+                if (t.gameObject.activeInHierarchy) score += 1;
                 if (score <= bestScore) continue;
                 bestScore = score;
-                style = new StyleSources
-                {
-                    ButtonSprite = image.sprite,
-                    ButtonSpriteType = image.type,
-                    ButtonColor = image.color,
-                    ButtonColors = s.colors,
-                    Font = label != null ? label.font : null,
-                    FontColor = label != null ? label.color : Color.white,
-                    FontSize = label != null ? label.fontSize : 0
-                };
+                best = t;
             }
-            if (style == null)
+            LogInfo("字体候选：" + (candidates.Length > 0 ? candidates.ToString() : "无"));
+            if (best != null)
             {
-                // 场景里没有任何可取材的按钮，先用默认值，靠后续保底填充
-                style = new StyleSources
-                {
-                    ButtonColors = ColorBlock.defaultColorBlock,
-                    FontColor = Color.white
-                };
+                LogInfo("使用游戏字体：" + best.font.name);
+                return best.font;
             }
-
-            // 第二轮：缺底图时从场景任意 Image 借（优先挂在 Selectable 下、当前可见的）
-            if (style.ButtonSprite == null)
+            // Unity 2020 内置字体叫 Arial.ttf，2022+ 叫 LegacyRuntime.ttf，逐级兜底
+            var fallback = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (fallback == null) fallback = Resources.GetBuiltinResource<Font>("Arial.ttf");
+            if (fallback == null)
             {
-                Image best = null;
-                var images = FindObjectsOfType<Image>(true);
-                foreach (var img in images)
-                {
-                    if (img == null || img.sprite == null) continue;
-                    if (best == null ||
-                        (img.GetComponentInParent<Selectable>() != null && best.GetComponentInParent<Selectable>() == null) ||
-                        (img.gameObject.activeInHierarchy && !best.gameObject.activeInHierarchy))
-                    {
-                        best = img;
-                    }
-                }
-                if (best != null)
-                {
-                    style.ButtonSprite = best.sprite;
-                    style.ButtonSpriteType = best.type;
-                    style.ButtonColor = best.color;
-                }
-            }
-
-            // 第三轮：缺字体时从场景任意 Text 借（优先挂在 Selectable 下的标签）
-            if (style.Font == null)
-            {
-                Text best = null;
-                var texts = FindObjectsOfType<Text>(true);
+                // 最后手段：场景里任意可用字体
                 foreach (var t in texts)
-                {
-                    if (t == null || t.font == null) continue;
-                    if (best == null ||
-                        (t.GetComponentInParent<Selectable>() != null && best.GetComponentInParent<Selectable>() == null) ||
-                        (t.gameObject.activeInHierarchy && !best.gameObject.activeInHierarchy))
-                    {
-                        best = t;
-                    }
-                }
-                if (best != null)
-                {
-                    style.Font = best.font;
-                    style.FontColor = best.color;
-                    style.FontSize = best.fontSize;
-                }
+                    if (t != null && t.font != null) { fallback = t.font; break; }
             }
-            if (style.Font == null)
-                style.Font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
-            if (style.FontSize <= 0) style.FontSize = 26;
-            return style;
+            LogInfo("未找到游戏字体，使用兜底字体：" + (fallback != null ? fallback.name : "null"));
+            return fallback;
         }
 
-        private void Build(StyleSources style, Vector2 anchoredPos)
+        private static bool ContainsCjk(string s)
         {
-            Debug.Log("[MortalInstantWin] 样式取材：底图=" +
-                      (style.ButtonSprite != null ? style.ButtonSprite.name : "(纯色)") +
-                      "，字体=" + (style.Font != null ? style.Font.name : "(默认)"));
+            if (string.IsNullOrEmpty(s)) return false;
+            foreach (var c in s)
+                if (c >= '一' && c <= '鿿') return true;
+            return false;
+        }
+
+        /// <summary>烘焙水墨风格圆角边框精灵：深色半透明填充 + 柔和细边框，9-slice 可拉伸。</summary>
+        private static Sprite CreateInkSprite()
+        {
+            const int size = 32;
+            const int border = 1;
+            const float radius = 6f;
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
+            tex.wrapMode = TextureWrapMode.Clamp;
+            tex.filterMode = FilterMode.Bilinear;
+            var fill = new Color(0f, 0f, 0f, 0.62f);
+            var edge = new Color(1f, 1f, 1f, 0.5f);
+            for (var y = 0; y < size; y++)
+            {
+                for (var x = 0; x < size; x++)
+                {
+                    // 圆角：角部像素按到圆心距离判定
+                    var cx = x < radius ? radius : (x >= size - radius ? size - radius - 1 : x);
+                    var cy = y < radius ? radius : (y >= size - radius ? size - radius - 1 : y);
+                    var dx = x - cx;
+                    var dy = y - cy;
+                    var dist = dx * dx + dy * dy;
+                    if (dist > radius * radius)
+                    {
+                        tex.SetPixel(x, y, new Color(0f, 0f, 0f, 0f));
+                        continue;
+                    }
+                    var isBorder = x < border || y < border || x >= size - border || y >= size - border ||
+                                   dist > (radius - border) * (radius - border);
+                    tex.SetPixel(x, y, isBorder ? edge : fill);
+                }
+            }
+            tex.Apply();
+            return Sprite.Create(tex, new Rect(0f, 0f, size, size), new Vector2(0.5f, 0.5f), 100f,
+                0, SpriteMeshType.FullRect, new Vector4(8f, 8f, 8f, 8f));
+        }
+
+        private static void Build(Vector2 anchoredPos)
+        {
+            var font = FindGameFont();
+            var inkSprite = CreateInkSprite();
+
+            var rootGo = new GameObject("MIW_OverlayRoot");
+            UnityEngine.Object.DontDestroyOnLoad(rootGo);
+
             var canvasGo = new GameObject("MIW_Canvas");
-            canvasGo.transform.SetParent(transform, false);
+            canvasGo.transform.SetParent(rootGo.transform, false);
             var canvas = canvasGo.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             canvas.sortingOrder = 30000;
@@ -201,7 +200,7 @@ namespace MortalInstantWin
 
             EnsureEventSystem();
 
-            // 面板：背景沿用游戏按钮底图
+            // 面板
             var panelGo = new GameObject("MIW_Panel", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
             panelGo.transform.SetParent(canvasGo.transform, false);
             _panel = (RectTransform)panelGo.transform;
@@ -209,19 +208,21 @@ namespace MortalInstantWin
             _panel.pivot = new Vector2(0.5f, 0.5f);
             _panel.sizeDelta = PanelSize;
             _panel.anchoredPosition = anchoredPos;
-            ApplySprite(panelGo.GetComponent<Image>(), style);
+            var panelImage = panelGo.GetComponent<Image>();
+            panelImage.sprite = inkSprite;
+            panelImage.type = Image.Type.Sliced;
             var drag = panelGo.AddComponent<PanelDragHandler>();
             drag.Panel = _panel;
             drag.Canvas = canvas;
             drag.OnMoved = delegate (Vector2 pos) { if (OnMoved != null) OnMoved(pos); };
 
             // 标题
-            _titleText = CreateLabel("MIW_Title", _panel, style, "直接結算", 24);
-            Place(_titleText, new Vector2(0f, -6f), new Vector2(PanelSize.x, 30f));
+            var title = CreateLabel("MIW_Title", _panel, font, "直接結算", 23);
+            Place(title, new Vector2(0f, -8f), new Vector2(PanelSize.x, 30f));
 
-            // 两个游戏风格按钮
-            var winButton = CreateButton("MIW_WinButton", _panel, style, new Vector2(0f, -42f));
-            var loseButton = CreateButton("MIW_LoseButton", _panel, style, new Vector2(0f, -108f));
+            // 两个按钮
+            var winButton = CreateButton("MIW_WinButton", _panel, inkSprite, font, new Vector2(0f, -44f));
+            var loseButton = CreateButton("MIW_LoseButton", _panel, inkSprite, font, new Vector2(0f, -110f));
             _winLabel = winButton.GetComponentInChildren<Text>();
             _loseLabel = loseButton.GetComponentInChildren<Text>();
             winButton.onClick.AddListener(delegate { if (OnWin != null) OnWin(); });
@@ -230,26 +231,24 @@ namespace MortalInstantWin
             SetContext(_visible, _isDuel);
         }
 
-        private static void ApplySprite(Image image, StyleSources style)
-        {
-            image.sprite = style.ButtonSprite;
-            image.type = style.ButtonSpriteType;
-            image.color = style.ButtonColor;
-        }
-
-        private static Button CreateButton(string name, Transform parent, StyleSources style, Vector2 anchoredPos)
+        private static Button CreateButton(string name, Transform parent, Sprite sprite, Font font, Vector2 anchoredPos)
         {
             var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
             go.transform.SetParent(parent, false);
-            ApplySprite(go.GetComponent<Image>(), style);
+            var image = go.GetComponent<Image>();
+            image.sprite = sprite;
+            image.type = Image.Type.Sliced;
+
             var button = go.AddComponent<Button>();
             button.transition = Selectable.Transition.ColorTint;
-            button.colors = style.ButtonColors;
-            button.targetGraphic = go.GetComponent<Image>();
+            var colors = button.colors;
+            colors.highlightedColor = new Color(1.35f, 1.35f, 1.35f, 1f);
+            colors.pressedColor = new Color(0.75f, 0.75f, 0.75f, 1f);
+            button.colors = colors;
+            button.targetGraphic = image;
             button.interactable = true;
 
-            var label = CreateLabel(name + "_Text", go.transform, style, "", Mathf.Clamp(style.FontSize, 20, 28));
-            Place(label, Vector2.zero, ButtonSize);
+            var label = CreateLabel(name + "_Text", go.transform, font, "", 26);
             var labelRt = (RectTransform)label.transform;
             labelRt.anchorMin = Vector2.zero;
             labelRt.anchorMax = Vector2.one;
@@ -263,13 +262,13 @@ namespace MortalInstantWin
             return button;
         }
 
-        private static Text CreateLabel(string name, Transform parent, StyleSources style, string content, int fontSize)
+        private static Text CreateLabel(string name, Transform parent, Font font, string content, int fontSize)
         {
             var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
             go.transform.SetParent(parent, false);
             var text = go.GetComponent<Text>();
-            text.font = style.Font;
-            text.color = style.FontColor;
+            text.font = font;
+            text.color = TextColor;
             text.fontSize = fontSize;
             text.alignment = TextAnchor.MiddleCenter;
             text.horizontalOverflow = HorizontalWrapMode.Overflow;
@@ -287,14 +286,32 @@ namespace MortalInstantWin
             rt.sizeDelta = size;
         }
 
-        /// <summary>战斗场景一般已有 EventSystem；万一没有则按游戏所用的新输入系统补一个。</summary>
+        /// <summary>战斗场景一般已有 EventSystem；万一没有则尝试补一个，失败也不影响面板显示。</summary>
         private static void EnsureEventSystem()
         {
-            if (FindObjectOfType<EventSystem>() != null) return;
-            var go = new GameObject("MIW_EventSystem");
-            go.AddComponent<EventSystem>();
-            var module = go.AddComponent<UnityEngine.InputSystem.UI.InputSystemUIInputModule>();
-            module.AssignDefaultActions();
+            try
+            {
+                if (UnityEngine.Object.FindObjectOfType<EventSystem>() != null) return;
+                var go = new GameObject("MIW_EventSystem");
+                go.AddComponent<EventSystem>();
+                try
+                {
+                    // 游戏使用新输入系统
+                    var module = go.AddComponent<UnityEngine.InputSystem.UI.InputSystemUIInputModule>();
+                    module.AssignDefaultActions();
+                }
+                catch (Exception e)
+                {
+                    LogInfo("InputSystemUIInputModule 创建失败，退回 StandaloneInputModule: " + e.Message);
+                    var old = go.GetComponent<UnityEngine.InputSystem.UI.InputSystemUIInputModule>();
+                    if (old != null) UnityEngine.Object.Destroy(old);
+                    go.AddComponent<StandaloneInputModule>();
+                }
+            }
+            catch (Exception e)
+            {
+                LogInfo("EventSystem 创建失败（战斗场景通常已有，可忽略）: " + e.Message);
+            }
         }
 
         private class PanelDragHandler : MonoBehaviour, IBeginDragHandler, IDragHandler, IEndDragHandler

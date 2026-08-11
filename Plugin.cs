@@ -12,15 +12,15 @@ namespace MortalInstantWin
     /// <summary>
     /// 活侠传战斗直接胜利/失败补丁。
     /// 进入单挑（Mortal.Combat）或战役（Mortal.Battle）后，屏幕上出现一组
-    /// 游戏 UI 风格的可拖动按钮（克隆自游戏自带按钮），点击按正常胜负流程结算。
-    /// 万一克隆不到游戏按钮，退回 IMGUI 灰框兜底。
+    /// 水墨风格的可拖动按钮（按游戏官方 UI 风格手工设计），点击按正常胜负流程结算。
+    /// 万一风格面板构建失败，退回 IMGUI 灰框兜底。按 F9 可在任意界面强制显示/隐藏面板。
     /// </summary>
     [BepInPlugin(GUID, NAME, VERSION)]
     public class Plugin : BaseUnityPlugin
     {
         public const string GUID = "com.mohui666.mortalinstantwin";
         public const string NAME = "MortalInstantWin";
-        public const string VERSION = "1.2.1";
+        public const string VERSION = "1.3.0";
 
         private const float PollInterval = 0.25f;
         private const int WindowId = 0x4D5749; // "MWI"，仅 IMGUI 兜底使用
@@ -31,36 +31,44 @@ namespace MortalInstantWin
 
         private ConfigEntry<float> _panelX;
         private ConfigEntry<float> _panelY;
+        private ConfigEntry<bool> _debugConfigShow;
 
         private DuelManager _duel;
         private BattleManager _battle;
         private bool _duelEnded;
         private float _nextPollTime;
-
-        private GameStylePanel _overlay;
         private Rect _fallbackRect = new Rect(20f, 200f, 170f, 126f);
+        private bool _debugForceShow;
+        private bool _wasContextActive;
 
         private void Awake()
         {
             _panelX = Config.Bind("General", "PanelX", -720f, "面板位置 X（以屏幕中心为原点的坐标）");
             _panelY = Config.Bind("General", "PanelY", 0f, "面板位置 Y（以屏幕中心为原点的坐标）");
+            _debugConfigShow = Config.Bind("Debug", "ForceShowPanel", false, "调试：任意界面强制显示面板");
 
-            var go = new GameObject("MortalInstantWinOverlay");
-            DontDestroyOnLoad(go);
-            _overlay = go.AddComponent<GameStylePanel>();
-            _overlay.OnWin = delegate { TriggerSettle(true); };
-            _overlay.OnLose = delegate { TriggerSettle(false); };
-            _overlay.OnMoved = delegate (Vector2 pos)
+            GameStylePanel.Log = delegate (string msg) { Logger.LogInfo(msg); };
+            GameStylePanel.OnWin = delegate { TriggerSettle(true); };
+            GameStylePanel.OnLose = delegate { TriggerSettle(false); };
+            GameStylePanel.OnMoved = delegate (Vector2 pos)
             {
                 _panelX.Value = pos.x;
                 _panelY.Value = pos.y;
             };
 
-            Logger.LogInfo("MortalInstantWin 已加载：进入单挑或战役后会出现可拖动的【直接胜利/失败】按钮。");
+            Logger.LogInfo("MortalInstantWin 已加载：进入单挑或战役后会出现可拖动的【直接胜利/失败】按钮，按 F9 可强制显示/隐藏面板。");
         }
 
         private void Update()
         {
+            // F9：任意界面强制显示面板（调试/预览用）
+            var keyboard = UnityEngine.InputSystem.Keyboard.current;
+            if (keyboard != null && keyboard.f9Key.wasPressedThisFrame)
+            {
+                _debugForceShow = !_debugForceShow;
+                Logger.LogInfo("F9 调试：强制显示面板 = " + _debugForceShow);
+            }
+
             if (Time.unscaledTime >= _nextPollTime)
             {
                 _nextPollTime = Time.unscaledTime + PollInterval;
@@ -69,24 +77,30 @@ namespace MortalInstantWin
                 if (_duel == null) _duelEnded = false;
                 _battle = FindBattleManager();
 
-                if (ContextActive && !_overlay.Failed)
+                var active = ContextActive;
+                if (active && !_wasContextActive)
+                    Logger.LogInfo("检测到" + (DuelAvailable ? "单挑" : "战役") + "，准备显示直接结算面板。");
+                _wasContextActive = active;
+
+                var show = active || _debugForceShow || _debugConfigShow.Value;
+                if (show && !GameStylePanel.Failed)
                 {
-                    if (!_overlay.Ready &&
-                        _overlay.TryBuild(new Vector2(_panelX.Value, _panelY.Value)))
+                    if (!GameStylePanel.Ready &&
+                        GameStylePanel.TryBuild(new Vector2(_panelX.Value, _panelY.Value)))
                     {
-                        Logger.LogInfo("已克隆游戏内按钮样式，游戏风格面板构建完成。");
+                        Logger.LogInfo("游戏风格面板构建完成。");
                     }
-                    if (_overlay.Ready)
-                        _overlay.SetContext(true, DuelAvailable);
+                    if (GameStylePanel.Ready)
+                        GameStylePanel.SetContext(true, DuelAvailable || !BattleAvailable);
                 }
-                else if (_overlay.Ready)
+                else if (GameStylePanel.Ready)
                 {
-                    _overlay.SetContext(false, DuelAvailable);
+                    GameStylePanel.SetContext(false, DuelAvailable);
                 }
             }
 
             // 战斗中游戏可能隐藏并锁定鼠标，此处恢复以便点击按钮
-            if (ContextActive)
+            if (ContextActive || _debugForceShow || _debugConfigShow.Value)
             {
                 Cursor.visible = true;
                 Cursor.lockState = CursorLockMode.None;
@@ -141,11 +155,11 @@ namespace MortalInstantWin
             }
         }
 
-        // ---- IMGUI 兜底：克隆不到游戏按钮时使用 ----
+        // ---- IMGUI 兜底：风格面板构建失败时使用 ----
 
         private void OnGUI()
         {
-            if (!ContextActive || _overlay.Ready) return;
+            if ((!ContextActive && !_debugForceShow) || GameStylePanel.Ready) return;
             _fallbackRect.position = GUI.Window(WindowId, _fallbackRect, DrawFallbackWindow, "活侠传 · 直接结算").position;
         }
 
