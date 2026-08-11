@@ -1,13 +1,14 @@
 # MortalInstantWin — 活侠传战斗直接胜利/失败补丁
 
-《活侠传》（Legend of Mortal）的 BepInEx 插件：进入**单挑**或**战役**后，屏幕上会出现一个可拖动的按钮组，点击「直接胜利」或「直接失败」即按游戏自身的对应流程结算（正常发放结算、进入后续剧情）。
+《活侠传》（Legend of Mortal）的 BepInEx 插件：进入**单挑**或**战役**后，屏幕上会出现一组**游戏 UI 风格**的可拖动按钮，点击「直接勝利」或「直接失敗」即按游戏自身的对应流程结算（正常发放结算、进入后续剧情）。
 
 ## 功能
 
+- **游戏原生外观**：面板在运行时克隆当前场景中游戏自带的按钮（底图、字体、颜色、悬停/按下反馈与游戏 UI 一致），并配以同风格背景与标题；万一克隆不到按钮，自动退回系统灰框兜底，功能不受影响。
 - 同时支持两种战斗：
   - **单挑**（决斗系统，`Mortal.Combat`）：调用 `CombatManager.GameOver(win)`，与一方战败时的流程完全一致（应用胜/负结算 Flag、加载后续场景；若该场失败是死局 DeadEnd 则进入 GameOver 画面）。
   - **战役**（群战系统，`Mortal.Battle`）：调用 `GameLevelManager.ShowGameOver(FriendWin / EnemyWin, true)`，与游戏内置按钮相同（胜利=暂停面板测试 Win，失败=暂停面板认输），含拾取银两结算。
-- 按钮为可拖动窗口，拖动标题栏移动，位置自动保存到 `BepInEx/config/com.mohui666.mortalinstantwin.cfg`。
+- 拖动面板空白处移动按钮组，位置自动保存到 `BepInEx/config/com.mohui666.mortalinstantwin.cfg`。
 - 只在战斗中显示，战斗结束/离开场景后自动隐藏；战役内触发单挑时优先结算单挑，单挑结束后可再次点击结算战役。
 
 ## 安装
@@ -22,7 +23,7 @@
 
 ## 使用
 
-- 拖动窗口标题栏移动按钮位置。
+- 拖动面板空白处移动按钮组位置。
 - 点击「直接胜利」立即获胜，点击「直接失败」立即按战败/认输流程结算。
 
 ## 从源码构建
@@ -39,7 +40,7 @@ dotnet build -c Release -p:MortalPath="D:\Games\LegendOfMortal"
 
 ## 实现说明
 
-插件通过轮询检测当前场景中的 `Mortal.Combat.CombatManager`（单挑）与 `Mortal.Battle.GameLevelManager.Instance`（战役）判断是否在战斗中，使用 IMGUI 绘制可拖动按钮；点击后调用游戏自身的胜利结算方法，不修改任何游戏文件、不影响存档结构。
+插件通过轮询检测当前场景中的 `Mortal.Combat.CombatManager`（单挑）与 `Mortal.Battle.GameLevelManager.Instance`（战役）判断是否在战斗中；界面用 uGUI 实现，运行时克隆游戏自带按钮的样式（底图/字体/颜色），支持拖动并记忆位置；点击后调用游戏自身的胜负结算方法，不修改任何游戏文件、不影响存档结构。
 
 - 目标框架：.NET Framework 4.8（游戏为 Unity 2020.3.49f1，Mono x86）
 - 仅编译期引用游戏目录下的程序集，运行时由游戏进程提供。
