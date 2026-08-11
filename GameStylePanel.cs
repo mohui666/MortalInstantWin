@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
@@ -7,24 +6,20 @@ using UnityEngine.UI;
 namespace MortalInstantWin
 {
     /// <summary>
-    /// 游戏风格的可拖动结算面板：运行时从当前场景克隆游戏自带的 Button
-    /// （底图、字体、颜色与游戏 UI 一致），挂到新建的 Overlay Canvas 上，
-    /// 拖动面板背景移动位置。
+    /// 游戏风格的可拖动结算面板：运行时从当前场景提取游戏 UI 的样式素材
+    /// （按钮底图 Sprite 来自场景中 Selectable 的 targetGraphic，字体/颜色来自
+    /// 场景中的按钮标签 Text），从零拼装出与游戏 UI 一致的面板，
+    /// 挂到新建的 Overlay Canvas 上，拖动面板背景移动。
     /// </summary>
     public class GameStylePanel : MonoBehaviour
     {
         private static readonly Vector2 PanelSize = new Vector2(240f, 172f);
         private static readonly Vector2 ButtonSize = new Vector2(200f, 56f);
 
-        // 克隆按钮时按白名单保留组件（子节点只留文本相关），其余（本地化、热键、音效脚本等）一律移除
-        private static readonly HashSet<string> KeepOnRoot = new HashSet<string>
-            { "RectTransform", "CanvasRenderer", "Image", "Button" };
-        private static readonly HashSet<string> KeepOnChild = new HashSet<string>
-            { "RectTransform", "CanvasRenderer", "Text", "Outline", "Shadow" };
-
         private RectTransform _panel;
-        private Button _winButton;
-        private Button _loseButton;
+        private Text _titleText;
+        private Text _winLabel;
+        private Text _loseLabel;
         private bool _built;
         private bool _failed;
         private bool _visible = true;
@@ -55,21 +50,21 @@ namespace MortalInstantWin
             if (visible)
             {
                 var scene = isDuel ? "單挑" : "戰役";
-                SetButtonText(_winButton, scene + "：直接勝利");
-                SetButtonText(_loseButton, scene + "：直接失敗");
+                _winLabel.text = scene + "：直接勝利";
+                _loseLabel.text = scene + "：直接失敗";
             }
         }
 
-        /// <summary>尝试构建面板；场景里暂时找不到可克隆的游戏按钮时返回 false，稍后重试。</summary>
+        /// <summary>尝试构建面板；场景里暂时找不到游戏 UI 样式素材时返回 false，稍后重试。</summary>
         public bool TryBuild(Vector2 anchoredPos)
         {
             if (_built) return true;
             if (_failed) return false;
-            var template = FindTemplateButton();
-            if (template == null) return false;
             try
             {
-                Build(template, anchoredPos);
+                var style = FindStyleSources();
+                if (style == null) return false;
+                Build(style, anchoredPos);
             }
             catch (Exception e)
             {
@@ -82,24 +77,117 @@ namespace MortalInstantWin
             return true;
         }
 
-        /// <summary>在场景里找一个带文本和底图的游戏按钮作为克隆模板，优先取当前可见的。</summary>
-        private static Button FindTemplateButton()
+        private class StyleSources
         {
-            var buttons = FindObjectsOfType<Button>(true);
-            Button best = null;
-            foreach (var b in buttons)
-            {
-                if (b == null) continue;
-                if (b.GetComponent<Image>() == null) continue;
-                if (b.GetComponentInChildren<Text>(true) == null) continue;
-                if (best == null || (b.gameObject.activeInHierarchy && !best.gameObject.activeInHierarchy))
-                    best = b;
-            }
-            return best;
+            public Sprite ButtonSprite;
+            public Image.Type ButtonSpriteType;
+            public Color ButtonColor;
+            public ColorBlock ButtonColors;
+            public Font Font;
+            public Color FontColor;
+            public int FontSize;
         }
 
-        private void Build(Button template, Vector2 anchoredPos)
+        /// <summary>
+        /// 在场景中寻找游戏按钮的样式素材：
+        /// 底图取自带文本标签的 Selectable 的 targetGraphic（优先当前可见的），
+        /// 字体取自其标签 Text（或场景中任意 Text）。
+        /// </summary>
+        private static StyleSources FindStyleSources()
         {
+            // 第一轮：在 Selectable（Button/Toggle 等游戏按钮）中评分取材，
+            // 底图 Sprite、文本标签、当前可见性加分
+            StyleSources style = null;
+            var bestScore = -1;
+            var selectables = FindObjectsOfType<Selectable>(true);
+            foreach (var s in selectables)
+            {
+                if (s == null) continue;
+                var image = s.targetGraphic as Image;
+                if (image == null) continue;
+                var label = s.GetComponentInChildren<Text>(true);
+                var score = (image.sprite != null ? 4 : 0) +
+                            (label != null ? 2 : 0) +
+                            (s.gameObject.activeInHierarchy ? 1 : 0);
+                if (score <= bestScore) continue;
+                bestScore = score;
+                style = new StyleSources
+                {
+                    ButtonSprite = image.sprite,
+                    ButtonSpriteType = image.type,
+                    ButtonColor = image.color,
+                    ButtonColors = s.colors,
+                    Font = label != null ? label.font : null,
+                    FontColor = label != null ? label.color : Color.white,
+                    FontSize = label != null ? label.fontSize : 0
+                };
+            }
+            if (style == null)
+            {
+                // 场景里没有任何可取材的按钮，先用默认值，靠后续保底填充
+                style = new StyleSources
+                {
+                    ButtonColors = ColorBlock.defaultColorBlock,
+                    FontColor = Color.white
+                };
+            }
+
+            // 第二轮：缺底图时从场景任意 Image 借（优先挂在 Selectable 下、当前可见的）
+            if (style.ButtonSprite == null)
+            {
+                Image best = null;
+                var images = FindObjectsOfType<Image>(true);
+                foreach (var img in images)
+                {
+                    if (img == null || img.sprite == null) continue;
+                    if (best == null ||
+                        (img.GetComponentInParent<Selectable>() != null && best.GetComponentInParent<Selectable>() == null) ||
+                        (img.gameObject.activeInHierarchy && !best.gameObject.activeInHierarchy))
+                    {
+                        best = img;
+                    }
+                }
+                if (best != null)
+                {
+                    style.ButtonSprite = best.sprite;
+                    style.ButtonSpriteType = best.type;
+                    style.ButtonColor = best.color;
+                }
+            }
+
+            // 第三轮：缺字体时从场景任意 Text 借（优先挂在 Selectable 下的标签）
+            if (style.Font == null)
+            {
+                Text best = null;
+                var texts = FindObjectsOfType<Text>(true);
+                foreach (var t in texts)
+                {
+                    if (t == null || t.font == null) continue;
+                    if (best == null ||
+                        (t.GetComponentInParent<Selectable>() != null && best.GetComponentInParent<Selectable>() == null) ||
+                        (t.gameObject.activeInHierarchy && !best.gameObject.activeInHierarchy))
+                    {
+                        best = t;
+                    }
+                }
+                if (best != null)
+                {
+                    style.Font = best.font;
+                    style.FontColor = best.color;
+                    style.FontSize = best.fontSize;
+                }
+            }
+            if (style.Font == null)
+                style.Font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            if (style.FontSize <= 0) style.FontSize = 26;
+            return style;
+        }
+
+        private void Build(StyleSources style, Vector2 anchoredPos)
+        {
+            Debug.Log("[MortalInstantWin] 样式取材：底图=" +
+                      (style.ButtonSprite != null ? style.ButtonSprite.name : "(纯色)") +
+                      "，字体=" + (style.Font != null ? style.Font.name : "(默认)"));
             var canvasGo = new GameObject("MIW_Canvas");
             canvasGo.transform.SetParent(transform, false);
             var canvas = canvasGo.AddComponent<Canvas>();
@@ -113,7 +201,7 @@ namespace MortalInstantWin
 
             EnsureEventSystem();
 
-            // 面板背景沿用模板按钮的底图样式
+            // 面板：背景沿用游戏按钮底图
             var panelGo = new GameObject("MIW_Panel", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
             panelGo.transform.SetParent(canvasGo.transform, false);
             _panel = (RectTransform)panelGo.transform;
@@ -121,100 +209,82 @@ namespace MortalInstantWin
             _panel.pivot = new Vector2(0.5f, 0.5f);
             _panel.sizeDelta = PanelSize;
             _panel.anchoredPosition = anchoredPos;
-            var bg = panelGo.GetComponent<Image>();
-            var tplImage = template.GetComponent<Image>();
-            if (tplImage.sprite != null)
-            {
-                bg.sprite = tplImage.sprite;
-                bg.type = tplImage.type;
-                bg.color = tplImage.color;
-            }
-            else
-            {
-                bg.color = new Color(0f, 0f, 0f, 0.7f);
-            }
+            ApplySprite(panelGo.GetComponent<Image>(), style);
             var drag = panelGo.AddComponent<PanelDragHandler>();
             drag.Panel = _panel;
             drag.Canvas = canvas;
             drag.OnMoved = delegate (Vector2 pos) { if (OnMoved != null) OnMoved(pos); };
 
-            // 标题（字体取自模板按钮文本）
-            var tplText = template.GetComponentInChildren<Text>(true);
-            var title = CreateText("MIW_Title", _panel, tplText, "直接結算", 24);
-            var titleRt = (RectTransform)title.transform;
-            titleRt.anchorMin = titleRt.anchorMax = new Vector2(0.5f, 1f);
-            titleRt.pivot = new Vector2(0.5f, 1f);
-            titleRt.anchoredPosition = new Vector2(0f, -6f);
-            titleRt.sizeDelta = new Vector2(PanelSize.x, 30f);
+            // 标题
+            _titleText = CreateLabel("MIW_Title", _panel, style, "直接結算", 24);
+            Place(_titleText, new Vector2(0f, -6f), new Vector2(PanelSize.x, 30f));
 
-            _winButton = CloneButton(template, _panel, new Vector2(0f, -42f));
-            _loseButton = CloneButton(template, _panel, new Vector2(0f, -108f));
-            _winButton.onClick.AddListener(delegate { if (OnWin != null) OnWin(); });
-            _loseButton.onClick.AddListener(delegate { if (OnLose != null) OnLose(); });
+            // 两个游戏风格按钮
+            var winButton = CreateButton("MIW_WinButton", _panel, style, new Vector2(0f, -42f));
+            var loseButton = CreateButton("MIW_LoseButton", _panel, style, new Vector2(0f, -108f));
+            _winLabel = winButton.GetComponentInChildren<Text>();
+            _loseLabel = loseButton.GetComponentInChildren<Text>();
+            winButton.onClick.AddListener(delegate { if (OnWin != null) OnWin(); });
+            loseButton.onClick.AddListener(delegate { if (OnLose != null) OnLose(); });
 
             SetContext(_visible, _isDuel);
         }
 
-        private Button CloneButton(Button template, Transform parent, Vector2 anchoredPos)
+        private static void ApplySprite(Image image, StyleSources style)
         {
-            var go = Instantiate(template.gameObject, parent, false);
-            go.name = template.name + "_MIW";
-            go.SetActive(true);
-            StripComponents(go.transform);
+            image.sprite = style.ButtonSprite;
+            image.type = style.ButtonSpriteType;
+            image.color = style.ButtonColor;
+        }
 
-            var btn = go.GetComponent<Button>();
-            // 清掉原按钮携带的全部事件（含持久化监听），避免误触游戏逻辑
-            btn.onClick = new Button.ButtonClickedEvent();
-            btn.interactable = true;
+        private static Button CreateButton(string name, Transform parent, StyleSources style, Vector2 anchoredPos)
+        {
+            var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            go.transform.SetParent(parent, false);
+            ApplySprite(go.GetComponent<Image>(), style);
+            var button = go.AddComponent<Button>();
+            button.transition = Selectable.Transition.ColorTint;
+            button.colors = style.ButtonColors;
+            button.targetGraphic = go.GetComponent<Image>();
+            button.interactable = true;
+
+            var label = CreateLabel(name + "_Text", go.transform, style, "", Mathf.Clamp(style.FontSize, 20, 28));
+            Place(label, Vector2.zero, ButtonSize);
+            var labelRt = (RectTransform)label.transform;
+            labelRt.anchorMin = Vector2.zero;
+            labelRt.anchorMax = Vector2.one;
+            labelRt.offsetMin = labelRt.offsetMax = Vector2.zero;
 
             var rt = (RectTransform)go.transform;
             rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 1f);
             rt.pivot = new Vector2(0.5f, 1f);
             rt.anchoredPosition = anchoredPos;
             rt.sizeDelta = ButtonSize;
-            rt.localScale = Vector3.one;
-            rt.localRotation = Quaternion.identity;
-            return btn;
+            return button;
         }
 
-        private static void StripComponents(Transform root)
-        {
-            var all = root.GetComponentsInChildren<Component>(true);
-            foreach (var c in all)
-            {
-                if (c == null) continue;
-                var name = c.GetType().Name;
-                var keep = c.transform == root ? KeepOnRoot.Contains(name) : KeepOnChild.Contains(name);
-                if (!keep) Destroy(c);
-            }
-        }
-
-        private static void SetButtonText(Button btn, string label)
-        {
-            foreach (var t in btn.GetComponentsInChildren<Text>(true))
-            {
-                t.horizontalOverflow = HorizontalWrapMode.Overflow;
-                t.verticalOverflow = VerticalWrapMode.Overflow;
-                t.alignment = TextAnchor.MiddleCenter;
-                t.text = label;
-            }
-        }
-
-        private static Text CreateText(string name, Transform parent, Text styleSource, string content, int fontSize)
+        private static Text CreateLabel(string name, Transform parent, StyleSources style, string content, int fontSize)
         {
             var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(Text));
             go.transform.SetParent(parent, false);
             var text = go.GetComponent<Text>();
-            if (styleSource != null)
-            {
-                text.font = styleSource.font;
-                text.color = styleSource.color;
-            }
+            text.font = style.Font;
+            text.color = style.FontColor;
             text.fontSize = fontSize;
             text.alignment = TextAnchor.MiddleCenter;
             text.horizontalOverflow = HorizontalWrapMode.Overflow;
+            text.verticalOverflow = VerticalWrapMode.Overflow;
             text.text = content;
             return text;
+        }
+
+        private static void Place(Graphic graphic, Vector2 anchoredPos, Vector2 size)
+        {
+            var rt = (RectTransform)graphic.transform;
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.anchoredPosition = anchoredPos;
+            rt.sizeDelta = size;
         }
 
         /// <summary>战斗场景一般已有 EventSystem；万一没有则按游戏所用的新输入系统补一个。</summary>

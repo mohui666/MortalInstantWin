@@ -20,7 +20,7 @@ namespace MortalInstantWin
     {
         public const string GUID = "com.mohui666.mortalinstantwin";
         public const string NAME = "MortalInstantWin";
-        public const string VERSION = "1.2.0";
+        public const string VERSION = "1.2.1";
 
         private const float PollInterval = 0.25f;
         private const int WindowId = 0x4D5749; // "MWI"，仅 IMGUI 兜底使用
