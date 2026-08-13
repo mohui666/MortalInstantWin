@@ -3,32 +3,48 @@ using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
-namespace MortalInstantWin
+namespace lom_assistant
 {
     /// <summary>
-    /// 游戏风格的可拖动结算面板（静态实现，不持有常驻 MonoBehaviour，
+    /// 游戏风格的可拖动面板（静态实现，不持有常驻 MonoBehaviour，
     /// 避免 BepInEx 环境下组件被销毁导致的假空引用；面板若被销毁会自动重建）。
     ///
     /// 外观按《活侠传》官方水墨 UI 风格手工设计：深色半透明底、细白边框、
     /// 行书字体（字体取自场景中游戏自带文本，取不到则用系统默认字体），
     /// 边框纹理由代码烘焙 9-slice 精灵，不依赖场景模板。
+    ///
+    /// 面板有两种模式：战斗（直接胜利/失败两个按钮）与剧情（一键快进开关按钮）。
     /// </summary>
     public static class GameStylePanel
     {
+        public enum Mode
+        {
+            Combat,
+            Story
+        }
+
         private static readonly Vector2 PanelSize = new Vector2(240f, 176f);
+        private static readonly Vector2 StoryPanelSize = new Vector2(240f, 110f);
         private static readonly Vector2 ButtonSize = new Vector2(200f, 56f);
         private static readonly Color TextColor = new Color(0.95f, 0.94f, 0.90f);
 
         private static RectTransform _panel;
+        private static Text _title;
+        private static Button _winButton;
+        private static Button _loseButton;
+        private static Button _skipButton;
         private static Text _winLabel;
         private static Text _loseLabel;
+        private static Text _skipLabel;
         private static bool _built;
         private static bool _failed;
         private static bool _visible = true;
+        private static Mode _mode = Mode.Combat;
         private static bool _isDuel = true;
 
         public static Action OnWin;
         public static Action OnLose;
+        public static Action OnSkipRead;
         public static Action<Vector2> OnMoved;
         public static Action<string> Log;
 
@@ -47,10 +63,11 @@ namespace MortalInstantWin
             if (Log != null) Log(message);
         }
 
-        /// <summary>设置面板可见性与当前战斗类型（单挑/战役），并刷新按钮文字。</summary>
-        public static void SetContext(bool visible, bool isDuel)
+        /// <summary>设置面板可见性与当前模式（战斗/剧情、单挑/战役），并刷新布局与按钮文字。</summary>
+        public static void SetContext(bool visible, Mode mode, bool isDuel)
         {
             _visible = visible;
+            _mode = mode;
             _isDuel = isDuel;
             // 面板在运行中被销毁时，重置为未构建，等待下次 TryBuild 重建
             if (_built && _panel == null)
@@ -63,10 +80,30 @@ namespace MortalInstantWin
             if (_panel.gameObject.activeSelf != visible)
                 _panel.gameObject.SetActive(visible);
             if (visible)
+                ApplyMode();
+        }
+
+        /// <summary>剧情模式下刷新快进开关文字：开启中显示「停止快进」，关闭时显示「一键快进」。</summary>
+        public static void SetSkipState(bool skipping)
+        {
+            if (!Ready) return;
+            _skipLabel.text = skipping ? "停止快进" : "一键快进";
+        }
+
+        /// <summary>按当前模式切换布局：战斗显示直接胜利/失败，剧情显示一键快进。</summary>
+        private static void ApplyMode()
+        {
+            var story = _mode == Mode.Story;
+            _panel.sizeDelta = story ? StoryPanelSize : PanelSize;
+            _title.text = story ? "快进对话" : "直接结算";
+            _winButton.gameObject.SetActive(!story);
+            _loseButton.gameObject.SetActive(!story);
+            _skipButton.gameObject.SetActive(story);
+            if (!story)
             {
-                var scene = isDuel ? "單挑" : "戰役";
-                _winLabel.text = scene + "：直接勝利";
-                _loseLabel.text = scene + "：直接失敗";
+                var scene = _isDuel ? "单挑" : "战役";
+                _winLabel.text = scene + "：直接胜利";
+                _loseLabel.text = scene + "：直接失败";
             }
         }
 
@@ -184,10 +221,10 @@ namespace MortalInstantWin
             var font = FindGameFont();
             var inkSprite = CreateInkSprite();
 
-            var rootGo = new GameObject("MIW_OverlayRoot");
+            var rootGo = new GameObject("LOMA_OverlayRoot");
             UnityEngine.Object.DontDestroyOnLoad(rootGo);
 
-            var canvasGo = new GameObject("MIW_Canvas");
+            var canvasGo = new GameObject("LOMA_Canvas");
             canvasGo.transform.SetParent(rootGo.transform, false);
             var canvas = canvasGo.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
@@ -201,7 +238,7 @@ namespace MortalInstantWin
             EnsureEventSystem();
 
             // 面板
-            var panelGo = new GameObject("MIW_Panel", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            var panelGo = new GameObject("LOMA_Panel", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
             panelGo.transform.SetParent(canvasGo.transform, false);
             _panel = (RectTransform)panelGo.transform;
             _panel.anchorMin = _panel.anchorMax = new Vector2(0.5f, 0.5f);
@@ -217,18 +254,24 @@ namespace MortalInstantWin
             drag.OnMoved = delegate (Vector2 pos) { if (OnMoved != null) OnMoved(pos); };
 
             // 标题
-            var title = CreateLabel("MIW_Title", _panel, font, "直接結算", 23);
-            Place(title, new Vector2(0f, -8f), new Vector2(PanelSize.x, 30f));
+            _title = CreateLabel("LOMA_Title", _panel, font, "直接结算", 23);
+            Place(_title, new Vector2(0f, -8f), new Vector2(PanelSize.x, 30f));
 
-            // 两个按钮
-            var winButton = CreateButton("MIW_WinButton", _panel, inkSprite, font, new Vector2(0f, -44f));
-            var loseButton = CreateButton("MIW_LoseButton", _panel, inkSprite, font, new Vector2(0f, -110f));
-            _winLabel = winButton.GetComponentInChildren<Text>();
-            _loseLabel = loseButton.GetComponentInChildren<Text>();
-            winButton.onClick.AddListener(delegate { if (OnWin != null) OnWin(); });
-            loseButton.onClick.AddListener(delegate { if (OnLose != null) OnLose(); });
+            // 战斗按钮
+            _winButton = CreateButton("LOMA_WinButton", _panel, inkSprite, font, new Vector2(0f, -44f));
+            _loseButton = CreateButton("LOMA_LoseButton", _panel, inkSprite, font, new Vector2(0f, -110f));
+            _winLabel = _winButton.GetComponentInChildren<Text>();
+            _loseLabel = _loseButton.GetComponentInChildren<Text>();
+            _winButton.onClick.AddListener(delegate { if (OnWin != null) OnWin(); });
+            _loseButton.onClick.AddListener(delegate { if (OnLose != null) OnLose(); });
 
-            SetContext(_visible, _isDuel);
+            // 剧情按钮（位置同胜利按钮，剧情模式下只显示它）
+            _skipButton = CreateButton("LOMA_SkipButton", _panel, inkSprite, font, new Vector2(0f, -44f));
+            _skipLabel = _skipButton.GetComponentInChildren<Text>();
+            _skipLabel.text = "一键快进";
+            _skipButton.onClick.AddListener(delegate { if (OnSkipRead != null) OnSkipRead(); });
+
+            SetContext(_visible, _mode, _isDuel);
         }
 
         private static Button CreateButton(string name, Transform parent, Sprite sprite, Font font, Vector2 anchoredPos)
@@ -292,7 +335,7 @@ namespace MortalInstantWin
             try
             {
                 if (UnityEngine.Object.FindObjectOfType<EventSystem>() != null) return;
-                var go = new GameObject("MIW_EventSystem");
+                var go = new GameObject("LOMA_EventSystem");
                 go.AddComponent<EventSystem>();
                 try
                 {
